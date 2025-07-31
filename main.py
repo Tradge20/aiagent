@@ -58,37 +58,51 @@ def generate_content(client, messages, verbose=False):
         model="gemini-2.0-flash-001",
         contents=messages,
         config=types.GenerateContentConfig(
-            tools=[available_functions],system_instruction=system_prompt,
+            tools=[available_functions],
+            system_instruction=system_prompt
         ),
     )
-    if verbose:
+
+    if verbose and hasattr(response, "usage_metadata"):
         print("Prompt tokens:", response.usage_metadata.prompt_token_count)
         print("Response tokens:", response.usage_metadata.candidates_token_count)
-    
-    if response.candidates:
-        for candidate in response.candidates:
-            function_call_content = candidate.content
-            messages.append(function_call_content)
-    
-    if not response.function_calls:
-        return response.text
-    
-    function_responses = []
-    for function_call_part in response.function_calls:
-        function_call.result = call_function(function_call_part, verbose)
-        if (
-            not function_call.result.parts
-            or not function_call.result.parts[0].function_response
-        ):
-            raise Exception("empty function call response")
+
+    # Final response text from the model (if it gives one)
+    final_text = None
+
+    for candidate in response.candidates:
         if verbose:
-            print(f"-> {function_call.result.parts[0].function_response.response}")
-        function_responses.append(function_call.result.parts[0])
-        
-    if not function_responses:
-        raise Exception("no function responses generated, exiting.")
-    
-    messages.append(types.Content(role="tool", parts=function_responses))
+            print(f"Candidate role: {candidate.content.role}")
+
+        # Add the model's content to our running conversation
+        messages.append(candidate.content)
+
+        for part in candidate.content.parts:
+            # ✅ Safely handle text
+            text_value = getattr(part, "text", None)
+            if isinstance(text_value, str):
+                stripped = text_value.strip()
+                if stripped:
+                    final_text = stripped
+
+            # ✅ Handle function calls
+            func_call = getattr(part, "function_call", None)
+            if func_call is not None:
+                if verbose:
+                    print(f"Function call requested: {func_call.name}({func_call.args})")
+
+                func_response = call_function(func_call, verbose)
+
+                if not (func_response.parts and func_response.parts[0].function_response):
+                    raise Exception("Function call returned no valid response.")
+
+                if verbose:
+                    print(f"-> {func_response.parts[0].function_response.response}")
+
+                # Append the tool output back to conversation
+                messages.append(func_response)
+
+    return final_text
 
 
 if __name__ == "__main__":
